@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  Scheduler reads a bound pod's GPU group from the pod instead of a stale BindRequest
+custom:
+  Author: "ayyub-abdulrezak-ai"
+  Issue: "2344"

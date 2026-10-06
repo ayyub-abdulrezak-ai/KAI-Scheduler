@@ -32,6 +32,7 @@ import (
 	kaiv1alpha1 "github.com/kai-scheduler/api/kai/v1alpha1"
 
 	"github.com/kai-scheduler/KAI-scheduler/pkg/scheduler/api/common_info"
+	"github.com/kai-scheduler/KAI-scheduler/pkg/scheduler/api/node_info"
 	"github.com/kai-scheduler/KAI-scheduler/pkg/scheduler/api/pod_affinity"
 	"github.com/kai-scheduler/KAI-scheduler/pkg/scheduler/api/pod_info"
 	"github.com/kai-scheduler/KAI-scheduler/pkg/scheduler/api/pod_status"
@@ -2734,4 +2735,78 @@ func createTestResourceSlice(name, nodeName, driver string, deviceCount int) *re
 			Devices:  devices,
 		},
 	}
+}
+
+func TestSnapshot_BoundPodGpuGroupComesFromPodLabelNotBindRequest(t *testing.T) {
+	namespace := "ns-1"
+	podName := "fraction-pod"
+	podGroupName := "pg-1"
+	queue := &enginev2.Queue{ObjectMeta: metav1.ObjectMeta{Name: "queue-0"}}
+
+	gpuNode := func(name string) *corev1.Node {
+		return &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   name,
+				Labels: map[string]string{node_info.GpuMemoryLabel: "80000"},
+			},
+			Status: corev1.NodeStatus{
+				Allocatable: corev1.ResourceList{
+					"cpu":                         resource.MustParse("10"),
+					resource_info.GPUResourceName: resource.MustParse("1"),
+				},
+			},
+		}
+	}
+
+	boundPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      podName,
+			Namespace: namespace,
+			UID:       types.UID(podName),
+			Labels:    map[string]string{commonconstants.GPUGroup: "group-on-node-a"},
+			Annotations: map[string]string{
+				commonconstants.PodGroupAnnotationForPod: podGroupName,
+				commonconstants.GpuFraction:              "0.5",
+			},
+		},
+		Spec: corev1.PodSpec{
+			NodeName:   "node-a",
+			Containers: []corev1.Container{{Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{"cpu": resource.MustParse("1")}}}},
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+
+	replacedBindRequest := &schedulingv1alpha2.BindRequest{
+		ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: namespace},
+		Spec: schedulingv1alpha2.BindRequestSpec{
+			PodName:           podName,
+			SelectedNode:      "node-b",
+			SelectedGPUGroups: []string{"group-on-node-b"},
+		},
+		Status: schedulingv1alpha2.BindRequestStatus{Phase: schedulingv1alpha2.BindRequestPhaseSucceeded},
+	}
+
+	clusterInfo := newClusterInfoTests(t, clusterInfoTestParams{
+		kubeObjects: []runtime.Object{gpuNode("node-a"), gpuNode("node-b"), boundPod},
+		kaiSchedulerObjects: []runtime.Object{
+			queue,
+			&enginev2alpha2.PodGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: podGroupName, Namespace: namespace},
+				Spec:       enginev2alpha2.PodGroupSpec{Queue: queue.Name},
+			},
+			replacedBindRequest,
+		},
+	})
+	snapshot, err := clusterInfo.Snapshot()
+	assert.Nil(t, err)
+
+	nodeA := snapshot.Nodes["node-a"]
+	nodeB := snapshot.Nodes["node-b"]
+	assert.Contains(t, nodeA.UsedSharedGPUsMemory, "group-on-node-a")
+	assert.NotContains(t, nodeA.UsedSharedGPUsMemory, "group-on-node-b")
+	assert.Empty(t, nodeB.UsedSharedGPUsMemory)
+
+	podInfo := snapshot.PodGroupInfos[common_info.NewPodGroupID(namespace, podGroupName)].GetAllPodsMap()[common_info.PodID(podName)]
+	assert.Equal(t, "node-a", podInfo.NodeName)
+	assert.Equal(t, []string{"group-on-node-a"}, podInfo.GPUGroupIDs())
 }

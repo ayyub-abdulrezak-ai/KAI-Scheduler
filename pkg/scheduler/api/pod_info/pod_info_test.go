@@ -453,7 +453,7 @@ func TestPodInfo_updatePodAdditionalFields(t *testing.T) {
 				Name:      "p1",
 				Namespace: "ns1",
 				Status:    pod_status.Pending,
-				Pod: common_info.BuildPod("ns1", "p1", "node1", v1.PodPending,
+				Pod: common_info.BuildPod("ns1", "p1", "", v1.PodPending,
 					common_info.BuildResourceList("2000m", "2G"),
 					nil,
 					map[string]string{},
@@ -470,11 +470,79 @@ func TestPodInfo_updatePodAdditionalFields(t *testing.T) {
 				},
 			},
 			expected{
+				GpuRequirement:       *resource_info.NewGpuResourceRequirementWithGpus(0.5, 0),
+				ResourceRequestType:  "Fraction",
+				ResourceReceivedType: "Fraction",
+				GPUGroups:            []string{"1"},
+				SelectedMigProfile:   "",
+				IsBound:              false,
+				IsChiefPod:           true,
+			},
+		},
+		{
+			"Bound fraction gpu - pod label wins over disagreeing binding request",
+			podFields{
+				Job:       common_info.FakePogGroupId,
+				Name:      "p1",
+				Namespace: "ns1",
+				Status:    pod_status.Bound,
+				Pod: common_info.BuildPod("ns1", "p1", "node-a", v1.PodPending,
+					common_info.BuildResourceList("2000m", "2G"),
+					nil,
+					map[string]string{
+						commonconstants.GPUGroup: "group-on-node-a",
+					},
+					map[string]string{
+						commonconstants.GpuFraction:        "0.5",
+						ReceivedResourceTypeAnnotationName: string(RequestTypeFraction),
+					}),
+				bindingRequest: &bindrequest_info.BindRequestInfo{
+					BindRequest: &schedulingv1alpha2.BindRequest{
+						Spec: schedulingv1alpha2.BindRequestSpec{
+							SelectedNode:         "node-b",
+							SelectedGPUGroups:    []string{"group-on-node-b"},
+							ReceivedResourceType: string(RequestTypeRegular),
+						},
+					},
+				},
+			},
+			expected{
+				GpuRequirement:       *resource_info.NewGpuResourceRequirementWithGpus(0.5, 0),
+				ResourceRequestType:  "Fraction",
+				ResourceReceivedType: "Fraction",
+				GPUGroups:            []string{"group-on-node-a"},
+				IsBound:              true,
+				IsChiefPod:           true,
+			},
+		},
+		{
+			"Bound fraction gpu - no pod label, binding request group is ignored",
+			podFields{
+				Job:       common_info.FakePogGroupId,
+				Name:      "p1",
+				Namespace: "ns1",
+				Status:    pod_status.Bound,
+				Pod: common_info.BuildPod("ns1", "p1", "node-a", v1.PodPending,
+					common_info.BuildResourceList("2000m", "2G"),
+					nil,
+					map[string]string{},
+					map[string]string{
+						commonconstants.GpuFraction: "0.5",
+					}),
+				bindingRequest: &bindrequest_info.BindRequestInfo{
+					BindRequest: &schedulingv1alpha2.BindRequest{
+						Spec: schedulingv1alpha2.BindRequestSpec{
+							SelectedNode:      "node-b",
+							SelectedGPUGroups: []string{"group-on-node-b"},
+						},
+					},
+				},
+			},
+			expected{
 				GpuRequirement:      *resource_info.NewGpuResourceRequirementWithGpus(0.5, 0),
 				ResourceRequestType: "Fraction",
-				GPUGroups:           []string{"1"},
-				SelectedMigProfile:  "",
-				IsBound:             false,
+				GPUGroups:           nil,
+				IsBound:             true,
 				IsChiefPod:          true,
 			},
 		},
@@ -579,6 +647,7 @@ func TestPodInfo_updatePodAdditionalFields(t *testing.T) {
 					tt.name, tt.expected.AcceptedGpuRequirement, pi.AcceptedGpuRequirement)
 			}
 			assert.Equal(t, string(pi.ResourceRequestType), tt.expected.ResourceRequestType)
+			assert.Equal(t, string(pi.ResourceReceivedType), tt.expected.ResourceReceivedType)
 			if !reflect.DeepEqual(pi.GPUGroupIDs(), tt.expected.GPUGroups) {
 				t.Errorf("case (%s) failed: GPUGroups \n expected %v, \n got: %v \n",
 					tt.name, tt.expected.GPUGroups, pi.GPUGroupIDs())

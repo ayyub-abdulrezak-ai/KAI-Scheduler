@@ -503,6 +503,10 @@ func getTaskStatus(pod *v1.Pod, bindRequest *bindrequest_info.BindRequestInfo, s
 }
 
 func (pi *PodInfo) updatePodAdditionalFields(bindRequest *bindrequest_info.BindRequestInfo, draPodClaims ...*resourceapi.ResourceClaim) {
+	if pi.Pod.Spec.NodeName != "" {
+		bindRequest = nil
+	}
+
 	if bindRequest != nil && len(bindRequest.BindRequest.Spec.SelectedFractionalGpuGroupsOrDefault()) > 0 {
 		pi.SetFractionalGpuGroups(bindRequest.BindRequest.Spec.SelectedFractionalGpuGroupsOrDefault())
 	} else {
